@@ -74,7 +74,7 @@ VARSYAML
 fi
 
 cat >> vars/main.yaml << VARSYAML
-pulp_settings: {"allowed_content_checksums": ["md5", "sha1", "sha256", "sha512"]}
+pulp_settings: {"allowed_content_checksums": ["sha256", "sha512"]}
 VARSYAML
 
 if [[ "$TEST" == "pulp" || "$TEST" == "performance" || "$TEST" == "s3" || "$TEST" == "plugin-from-pypi" ]]; then
