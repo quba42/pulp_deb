@@ -97,6 +97,19 @@ class NoPackageIndexFile(Exception):
     pass
 
 
+class MissingReleaseFileField(Exception):
+    """
+    Exception signifying that the upstream release file is missing a required field.
+    """
+
+    def __init__(self, distribution, field, *args, **kwargs):
+        """
+        The upstream release file is missing a required field.
+        """
+        message = "The release file for distribution '{}' is missing the required field '{}'."
+        super().__init__(_(message).format(distribution, field), *args, **kwargs)
+
+
 def synchronize(remote_pk, repository_pk, mirror):
     """
     Sync content from the remote repository.
@@ -216,6 +229,9 @@ def _filter_split_components(release_file_string, remote_string, distribution):
     remote_string="main" would result in a return value of ["updates/main"]. If a component from
     the remote does not correspond to any component in the release file, a warning is logged.
     """
+    if distribution[-1] == "/":
+        return ["flat-repo-component"]
+
     release_file_components = release_file_string.split()
     if not remote_string:
         filtered_components = release_file_components
@@ -320,9 +336,11 @@ class DebUpdateReleaseFileAttributes(Stage):
                             release_file_artifact = da_names["InRelease"].artifact
                             release_file.relative_path = da_names["InRelease"].relative_path
 
+                    distribution = release_file.distribution
+
                     if not d_content.d_artifacts:
                         # No (proper) artifacts left -> distribution not found
-                        raise NoReleaseFile(distribution=release_file.distribution)
+                        raise NoReleaseFile(distribution=distribution)
 
                     release_file.sha256 = release_file_artifact.sha256
                     release_file_dict = deb822.Release(release_file_artifact.file)
@@ -330,8 +348,21 @@ class DebUpdateReleaseFileAttributes(Stage):
                         release_file.codename = release_file_dict["Codename"]
                     if "suite" in release_file_dict:
                         release_file.suite = release_file_dict["Suite"]
-                    release_file.components = release_file_dict["Components"]
-                    release_file.architectures = release_file_dict["Architectures"]
+
+                    if "components" in release_file_dict:
+                        release_file.components = release_file_dict["Components"]
+                    elif distribution[-1] == "/":
+                        release_file.components = ""
+                    else:
+                        raise MissingReleaseFileField(distribution, "Components")
+
+                    if "architectures" in release_file_dict:
+                        release_file.architectures = release_file_dict["Architectures"]
+                    elif distribution[-1] == "/":
+                        release_file.architectures = ""
+                    else:
+                        raise MissingReleaseFileField(distribution, "Architectures")
+
                     log.debug(_("Codename: {}").format(release_file.codename))
                     log.debug(_("Components: {}").format(release_file.components))
                     log.debug(_("Architectures: {}").format(release_file.architectures))
@@ -523,16 +554,28 @@ class DebFirstStage(Stage):
         release_component = await self._create_unit(release_component_dc)
         pending_tasks = []
         # Handle package indices
-        pending_tasks.extend(
-            [
-                self._handle_package_index(
-                    release_file, release_component, architecture, file_references
-                )
-                for architecture in architectures
-            ]
-        )
+
+        if release_file.distribution[-1] == "/":
+            architecture = architectures[0] if len(architectures) == 1 else None
+            pending_tasks.extend(
+                [
+                    self._handle_package_index(
+                        release_file, release_component, architecture, file_references
+                    )
+                ]
+            )
+        else:
+            pending_tasks.extend(
+                [
+                    self._handle_package_index(
+                        release_file, release_component, architecture, file_references
+                    )
+                    for architecture in architectures
+                ]
+            )
+
         # Handle installer package indices
-        if self.remote.sync_udebs:
+        if self.remote.sync_udebs and release_file.distribution[-1] != "/":
             pending_tasks.extend(
                 [
                     self._handle_package_index(
@@ -545,8 +588,9 @@ class DebFirstStage(Stage):
                     for architecture in architectures
                 ]
             )
+
         # Handle installer file indices
-        if self.remote.sync_installer:
+        if self.remote.sync_installer and release_file.distribution[-1] != "/":
             pending_tasks.extend(
                 [
                     self._handle_installer_file_index(
@@ -555,6 +599,7 @@ class DebFirstStage(Stage):
                     for architecture in architectures
                 ]
             )
+
         if self.remote.sync_sources:
             raise NotImplementedError("Syncing source repositories is not yet implemented.")
         await asyncio.gather(*pending_tasks)
